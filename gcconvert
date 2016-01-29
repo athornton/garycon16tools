@@ -1,0 +1,166 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+require 5.10.0;
+
+use Text::CSV;
+use Data::Dumper;
+
+my $csv = Text::CSV->new ( { binary => 1 } )  # should set binary attribute.
+    or die "Cannot use CSV: ".Text::CSV->error_diag ();
+
+my $fn;
+if ($ARGV[0]) {
+    $fn = $ARGV[0];
+}
+
+my $fh;
+if ($fn) {
+    open $fh, "<:encoding(utf8)",$fn or die "$fn:$!";
+} else {
+    $fh=*STDIN;
+}
+
+my $hdr = $csv->getline($fh);
+my %usermap;
+# This part is ad-hoc based on the particular column layout I chose.
+$usermap{"adam"}{"column"}=12;
+$usermap{"amy"}{"column"}=13;
+$usermap{"image"}{"column"}=14;
+$usermap{"tracyjo"}{"column"}=15;
+$usermap{"jason"}{"column"}=16;
+$usermap{"paolo"}{"column"}=17;
+$usermap{"jeremy"}{"column"}=18;
+$usermap{"philip"}{"column"}=19;
+
+for my $u (keys %usermap) {
+    $usermap{$u}{"displayname"}=$hdr->[$usermap{$u}{"column"}];
+}
+
+my $header = "BEGIN:VCALENDAR\nVERSION:2.0\n";
+my $footer = "END:VCALENDAR\n";
+
+open my $ofh,">:encoding(utf8)","garycon-all.ics" or die "garycon-all.ics:$!";
+print $ofh ($header);
+
+  
+while ( my $row = $csv->getline($fh) ) {
+    my $id = $row->[0];
+    my $day = $row->[1];
+    my $time = $row->[2];
+    my $duration = $row->[3];
+    my ($daynum) = $day =~ m/(\d+)\s/;
+    my ($timenum) = $time =~ m/(\d+)/;
+    my ($durnum) = $duration =~ m/(\d+)\s/;
+    $timenum = $timenum + 600; # TZ
+    my $enddaynum = $daynum;
+    my $endtimenum = $timenum + (100 * $durnum);
+    if ($timenum > 2400) {
+	$daynum += 1;
+	$timenum -= 2400;
+    }
+    if ($endtimenum > 2400) {
+	$enddaynum += 1;
+	$endtimenum -= 2400;
+    }
+    $daynum += 20160303;
+    $enddaynum += 20160303;
+    $timenum = sprintf("%04d",$timenum);
+    $endtimenum = sprintf("%04d",$endtimenum);
+	
+    my $dtstart = "DTSTART;TZID=UTC:" . $daynum . "T" . $timenum . "00";
+    my $dtend = "DTEND;TZID=UTC:" . $enddaynum . "T" . $endtimenum . "00";
+
+    print $ofh ();
+    my $title=$row->[4];
+    my $desc=$row->[7];
+    my $firstname=$row->[5];
+    my $lastname=$row->[6];
+    my $system=$row->[8];
+    my $seats=$row->[9];
+    my $gp=$row->[10];
+    if ($gp eq "") {
+	$gp=0;
+    }
+    my $sp=$row->[11];
+    if ($sp eq "") {
+	$sp=0;
+    }
+    $desc =~ s|,|\\,|g;
+    $desc =~ s|\n|\\n|g;
+    $desc .= "\\n\\nGM: $firstname $lastname\\n";
+    $desc .= "\\nSystem: $system\\n";
+    $desc .= "\\nSeats: $seats\\n";
+    $desc .= "\\nCost: $gp GP, $sp SP\\n";
+    
+    my $description = "DESCRIPTION:$desc";
+    my $summary = "SUMMARY:$title";
+
+    my $vevent = "BEGIN:VEVENT\n" . $dtstart . "\n" . $dtend . "\n";
+    $vevent .= $summary . "\n" . $description;
+    my $eventend = "\nEND:VEVENT\n";
+    my $chosen = 0;
+    my $rankings = "";
+    for my $user (keys %usermap) {
+	my $rank = 0;
+	my $c = $usermap{$user}{"column"};
+	if (defined($c)) {
+	    $rank = $row->[$c];
+	}
+	if ($rank eq "") {
+	    $rank = 0;
+	}
+	if ($rank > 1) {
+	    if ($rankings eq "") {
+		$rankings = "\\n\\nRANKINGS:\\n";
+	    }
+	    my $uranking = $usermap{$user}{"displayname"}.": ".$rank."\\n";
+	    $rankings .= $uranking;
+	    my $levent = $vevent . "\\n\\nRANKING: $rank\\n" . $eventend;
+	    $usermap{$user}{"ranked"}{$id}{"rank"} = $rank;	    
+	    $usermap{$user}{"ranked"}{$id}{"event"} = $levent;
+	    $usermap{$user}{"ranked"}{$id}{"dtstart"} = $dtstart;
+	}
+    }
+    $vevent .= $rankings . $eventend;
+    print $ofh ($vevent);
+}
+
+#print Dumper(\%usermap);
+
+print $ofh ($footer);
+close $ofh;
+for my $u (keys %usermap) {
+    if (defined($usermap{$u}{"ranked"})) {
+	my %q = %{$usermap{$u}{"ranked"}};
+	my @evlist=events(\%q);
+	if ((@evlist) and (length(@evlist) > 0)) {
+	    my $fn = "garycon-prefs-$u.ics";
+	    open my $fh,">:encoding(utf8)",$fn or die "fn:$!";
+	    print $fh ($header);
+	    for my $e (@evlist) {
+		print $fh ($e->{"event"});
+	    }
+	    print $fh ($footer);
+	    close $fh;
+	}
+    }
+}
+		    
+		    
+		
+sub events {
+    my $rr = shift;
+    my %rankmap = %{$rr};
+    my @evlist;
+    my @items = values(%rankmap);
+    return sort sortevents @items;
+}
+
+sub sortevents {
+    my $c = $a->{"dtstart"} cmp $b->{"dtstart"};
+    if ($c != 0 ) { 
+	return $c;
+    }
+    return ($a->{"rank"} <=> $b->{"rank"});
+}
